@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<!-- saved from url=(0040)http://bekabarbakadze.000webhostapp.com/ -->
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <link type="text/css" href="./Design Natural Gas Pipeline_files/design.css" rel="stylesheet" media="all">
+        <title>Design Natural Gas Pipeline</title>
+        
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            table, th, td {
+                border: 1px solid black;
+            }            
+        </style>
+    </head>
+    <body>
+        <script>
+            
+            var P0;					//start pressure on zero node
+            var m;					//number of transit nodes
+            var n;					//number of subscriber nodes
+            var e;					//sum of all nodes
+            var d = [];				//graph matrix. usage : d[i] is an list of nodes which are reachable from i node.		
+            var t = [];				//pipes type matrix:  t[i][j] means that pipe between i and j nodes are t[i][j] type
+            var M = [];				//pipes length matrix: M[i][j] means that distance between i and j nodes are M[j][j] meters
+            var Q = [];				//usage per node; it is recursive sum  of children nodes.
+            var PredDiam = [];      //for user defined diameters.
+            var Qinit = [];			//usage during initialization
+            var Pinit = [];
+            var Iinit = [];
+            var Ainit = [];
+            var Binit = [];
+            var Linit = [];
+            var Tinit = [];
+            var Dinit = [];
+            var P = [];				//pressure of each node
+            var RP = [];			//required pressure for each subscriber
+            var F = [];				//check if node is a subscriber
+			var best_sum = 1e9;		//best sum of pipelines prices;
+			var current_sum = 0;
+            var V = [];
+			var V_Final = [];
+			var P_Final = [];
+            var S = 0;
+            var ro = 0.73;
+            var type = [0, 0.002, 0.002, 0.01];
+            var cRatio = 10;
+			var minPressure = 1000000;
+			var Parent = 0;
+/*
+*/
+			//array to store pipe diameters for each type.
+            var D = [[], [35.3, 55.4, 79.2, 96.8, 110.2, 123.4, 141, 158.6, 176.2, 198.2, 220.4, 246.8, 277.6, 312.8, 352.6], 
+						 [32.6, 51.4, 73.6, 90, 102.2, 114.6, 130.8, 147.2, 163.6, 184, 204.6, 229.2, 245.4, 290.6, 327.28], 
+						 [50, 82, 106, 150, 207, 261, 313, 414, 518]];
+            var PRC = [	[], 
+						[1.8, 3.7, 7.5, 11.1, 13.9, 17.6, 22.8, 28.6, 35.5, 40, 55.3, 65, 87.5, 112.9, 143.8],
+						[2.6, 5.5, 11.4, 16.8, 21.3, 26.6, 34.9, 44.0, 54.2,65.2,84.7, 110, 134.5,174,221],
+						[]]
+			
+            //initializes recursive sum of usage for each node.
+			//initializes final answer array with maximum possible diameters
+			function initQV(x) {
+                var len = d[x].length;
+                if (len === 0)
+                    return Q[x];
+                for (var i = 0; i < len; i++){
+                    var tp = t[x][d[x][i]];
+                    var ln = D[tp].length;
+                    V[x][d[x][i]] = 0;
+                    Q[x] = Q[x] + initQV(d[x][i]);
+                }
+                return Q[x];
+            }
+			
+			//main initialization function to init all values which are used during calculations
+            function init() {
+                P0 = parseFloat(document.getElementById('source').value);			//parse starting pressure
+                n = parseInt(document.getElementById('subscribers').value);			//parse subscribers number
+                m = parseInt(document.getElementById('nodes').value);				//parse transit points number
+                
+                e = m + n;		//number of nodes
+
+				//initialize arrays with zero values
+                for (var i = 0; i <= n + m; i++){
+                    d[i] = [];
+                    t[i] = [];
+                    M[i] = [];
+                    P[i] = 0;
+                    RP[i] = 0;
+                    V[i] = [];
+                    Q[i] = 0;
+                    Qinit[i] = 0;
+                    PredDiam[i] = [];
+                }
+                P[0] = P0;
+
+				//initialize usage arrays
+                for (var i = 0; i < n + m; i++){
+                    var row = document.getElementById('subscribersTable').children[i + 1];
+                    var index = parseInt(row.children[0].children[0].value);
+                    Q[index] = parseInt(row.children[1].children[0].value);
+                    Qinit[index] = Q[index];
+                }
+				
+				//initialize required pressure array and check subscriber array
+                for (var i = m; i < n + m; i++){
+                    var row = document.getElementById('subscribersTable').children[i + 1];
+                    var index = parseInt(row.children[0].children[0].value);
+                    RP[index] = parseFloat(row.children[2].children[0].value);
+					if (RP[index] < minPressure) minPressure = RP[index];
+                    F[index] = true;
+                }
+				
+                //cunstruct graph of nodes with neighbouring matrix
+				for (var i = 0; i < n + m; i++){
+                    var row = document.getElementById('matrixTable').children[i + 1];
+                    var index1 = parseInt(row.children[0].children[0].value);			    //first node (from)
+                    var index2 = parseInt(row.children[1].children[0].value);			    //second node (to)
+                    var length = parseInt(row.children[2].children[0].value);		    	//length in meters
+                    var type = parseInt(row.children[3].children[0].value);				    //pipe type
+                    d[index1].push(index2);
+                    t[index1][index2] = type;
+                    M[index1][index2] = length;
+                    PredDiam[index1][index2] = parseFloat(row.children[4].firstChild.value);        //user defined diameters
+                }
+				
+				//initialize usage and final answer arrays.
+                initQV(0);
+
+            }
+            
+			//function to calculate pressure to next node whose parent nodes pressure is _P
+			//_P pressure of parent node
+			//_N friction coefficient of a surface of pipeline
+			//_D diameter of the pipe
+			//_Q usage for next node whose pressure is being calculated
+			//_L legngth of pipe in meters
+            function newP(_P, _N, _D, _Q, _L) {
+                var NP = 0.000014 * Math.pow((_N / _D + 1922.0 * 0.0000143 * _D / _Q), 0.25) * Math.pow(_Q, 2) * 0.73 / Math.pow(_D, 5) * _L * 100;
+                NP = _P * _P - NP;
+                if (NP < 0) return 0;
+                NP = Math.pow(NP, 0.5);
+                return NP;
+            }
+            function rec(x) {
+                var ln = d[x].length;
+                if (ln === 0)
+                    return;
+                for (var i = 0; i < ln; i++){
+					if (V[x][d[x][i]] == -1) continue;
+                    var tp = t[x][d[x][i]];
+                    var _n = type[tp];
+                    P[d[x][i]] = newP(P[x], _n, V[x][d[x][i]] / 10, Q[d[x][i]], M[x][d[x][i]]);
+                    rec(d[x][i]);
+                }
+            }
+            function check() {
+                rec(0);
+                for (var i = 0; i <= n + m; i++)
+                    if (RP[i] > P[i])
+                        return false;
+                return true;
+            }
+			
+			function getPrice(tp, diameter) {
+				var len = D[tp].legth;
+				for (var i = 0; i < len; i++) {
+					if (diameter == D[tp][i]) 
+						return PRC[tp][i];
+				}
+				return 0;
+			}
+			
+			//new recursive function to calculate optimal diameters
+			function calculate_brute_force_v2(x, max_diameter) {
+				if (P[x] < minPressure) return false;
+				if (F[x] && P[x] < RP[x]) return false;
+				var ln = d[x].length;
+				var ret = true;
+				for (var i = 0; i < ln; i++) {
+					var next_node = d[x][i];
+					var tp = t[x][next_node];
+					var _n = type[tp];
+					var diam_length = D[tp].length;
+					var ret2 = false;
+                    for (var j = 0; j < diam_length; j++)
+						if(D[tp][j] <= max_diameter) {
+							var cur_diameter = D[tp][j];
+                            if (PredDiam[x][next_node] != 0 && cur_diameter != PredDiam[x][next_node])
+                            {
+                                    continue;
+                            }
+							var len = M[x][next_node];
+							var np = newP(P[x], _n, cur_diameter / 10, Q[next_node], len);
+							P[d[x][i]] = np;
+							current_sum = current_sum - len * getPrice(tp, V[x][next_node]) + len * PRC[tp][j];
+							V[x][next_node] = cur_diameter;
+							if (calculate_brute_force_v2(d[x][i], cur_diameter)) {ret2 = true; break};
+						}
+					ret = ret && ret2;
+				}
+				if (ret && x == 0 && current_sum < best_sum) {V_Final = V; P_Final = P; best_sum = current_sum; }
+				return ret;
+			}
+			
+			
+			
+			
+            function calculate() {
+                //initialize variables to start new calculation
+				current_sum  = 0;
+				init();
+		
+				calculate_brute_force_v2(0,1e9);
+				V = V_Final;
+				P = P_Final;
+                var RD = document.getElementById("resultsSuscribersTableDiv");
+                var fc = RD.firstChild;
+                while (fc) {
+                    RD.removeChild(fc);
+                    fc = RD.firstChild;
+                }
+                var RT = document.createElement("table");
+                RT.id = "resultTableNodes";
+                var tr = document.createElement("tr");
+                var th1 = document.createElement("th");
+                var th2 = document.createElement("th");
+                var th3 = document.createElement("th");
+                
+                var text1 = document.createTextNode("წერტილის ნომერი");
+                var text2 = document.createTextNode("მოხმარება(მ3/სთ)");
+                var text3 = document.createTextNode("წნევა(კგ/სმ2)");
+                
+                th1.appendChild(text1);
+                th2.appendChild(text2);
+                th3.appendChild(text3);
+                
+                tr.appendChild(th1);
+                tr.appendChild(th2);
+                tr.appendChild(th3);
+                
+                RT.appendChild(tr);
+                
+                for (var i = 1; i <= n + m; i++) {
+                    var tr = document.createElement("tr");
+                    var td1 = document.createElement("td");
+                    var td2 = document.createElement("td");
+                    var td3 = document.createElement("td");
+
+                    var text1 = document.createTextNode(i.toString());
+                    var text2 = document.createTextNode(Q[i].toString());
+                    var text3 = document.createTextNode(P[i].toString());
+                    
+                    td1.appendChild(text1);
+                    td2.appendChild(text2);
+                    td3.appendChild(text3);
+                    
+                    tr.appendChild(td1);
+                    tr.appendChild(td2);
+                    tr.appendChild(td3);
+                    RT.appendChild(tr);
+                }
+                RD.appendChild(RT);
+                
+                var RMD = document.getElementById("resultmatrix");
+                
+                var fe = RMD.firstChild;
+                while (fe) {
+                    RMD.removeChild(fe);
+                    fe = RMD.firstChild;
+                }
+        
+                var RMT = document.createElement("table");
+                var tr = document.createElement("tr");
+                
+                var th1 = document.createElement("th");
+                var th2 = document.createElement("th");
+                var th3 = document.createElement("th");
+                var th4 = document.createElement("th");
+                var th5 = document.createElement("th");
+               
+                var text1 = document.createTextNode("წერტილი 1");
+                var text2 = document.createTextNode("წერტილი 2");
+                var text3 = document.createTextNode("სიგრძე(მეტრი)");
+                var text4 = document.createTextNode("მილის ტიპი");
+                var text5 = document.createTextNode("დიამეტრი(მილიმეტრი)");
+                
+                th1.appendChild(text1);
+                th2.appendChild(text2);
+                th3.appendChild(text3);
+                th4.appendChild(text4);
+                th5.appendChild(text5);
+                
+                tr.appendChild(th1);
+                tr.appendChild(th2);
+                tr.appendChild(th3);
+                tr.appendChild(th4);
+                tr.appendChild(th5);
+                
+                RMT.appendChild(tr);
+                
+                for (var i = 0; i <= n + m; i++) {
+                    var ln = d[i].length;
+                    for (var j = 0; j < ln; j++) {
+                        var a = i;
+                        var b = d[i][j];
+
+                        var tr = document.createElement("tr");
+                        var td1 = document.createElement("td");
+                        var td2 = document.createElement("td");
+                        var td3 = document.createElement("td");
+                        var td4 = document.createElement("td");
+                        var td5 = document.createElement("td");
+
+                        var text1 = document.createTextNode(a.toString());
+                        var text2 = document.createTextNode(b.toString());
+                        var text3 = document.createTextNode(M[a][b].toString());
+                        var text = "";
+                        if (t[a][b] === 1) text = "პოლიეთილენი(SDR17)"; 
+                        if (t[a][b] === 2) text = "პოლიეთილენი(SDR11)"; 
+                        if (t[a][b] === 3) text = "მეტალი"; 
+                        var text4 = document.createTextNode(text);
+                        var text5 = document.createTextNode(V[a][b]);
+                        td1.appendChild(text1);
+                        td2.appendChild(text2);
+                        td3.appendChild(text3);
+                        td4.appendChild(text4);
+                        td5.appendChild(text5);
+
+                        tr.appendChild(td1);
+                        tr.appendChild(td2);
+                        tr.appendChild(td3);
+                        tr.appendChild(td4);
+                        tr.appendChild(td5);
+                
+                        RMT.appendChild(tr);
+
+                    }
+                }
+                RMD.appendChild(RMT);
+            }
+            function myFunction() {
+                var TableArea = document.getElementById('SuscribersTableDiv');
+                
+                var fc = TableArea.firstChild;
+                while (fc){
+                    TableArea.removeChild(fc);
+                    fc = TableArea.firstChild;
+                }
+                var Table = document.createElement('table');
+                Table.id = 'subscribersTable';
+                var tr = document.createElement('tr');
+                var th1 = document.createElement('th');
+                var th2 = document.createElement('th');
+                var th3 = document.createElement('th');
+                var text1 = document.createTextNode('აბონენტის ნომერი');
+                var text2 = document.createTextNode('მოხმარება(მ3/სთ)');
+                var text3 = document.createTextNode('წნევა(კგ/სმ2)');
+                th1.appendChild(text1);
+                th2.appendChild(text2);
+                th3.appendChild(text3);
+                tr.appendChild(th1);
+                tr.appendChild(th2);
+                tr.appendChild(th3);
+                Table.appendChild(tr);
+                
+                var sn = parseInt(document.getElementById('subscribers').value);
+                var sm = parseInt(document.getElementById('nodes').value);
+                var raod = 0;
+                for (var i = 1; i <= sn + sm; i++){
+                    raod++;
+                    var td1 = document.createElement('td');
+                    var td2 = document.createElement('td');
+                    var td3 = document.createElement('td');
+                    var text1 = document.createTextNode(i.toString());
+                    var input = document.createElement('input');
+                    input.type = 'text';
+                    td1.appendChild(fillOptions(sn, sm));
+                    td1.children[0].value = i;
+                    td2.appendChild(input);
+                    var input2 = document.createElement('input');
+                    input.type = 'text';
+                    input2.value = 1.2;
+                    td3.appendChild(input2);
+                    var tr = document.createElement('tr');
+                    tr.appendChild(td1);
+                    tr.appendChild(td2);
+                    if (raod > sm)
+                        tr.appendChild(td3);
+                    
+                    Table.appendChild(tr);
+
+                }
+
+                TableArea.appendChild(Table);
+                
+                var TableArea = document.getElementById('matrix');
+                
+                var fc = TableArea.firstChild;
+                while (fc){
+                    TableArea.removeChild(fc);
+                    fc = TableArea.firstChild;
+                }
+                
+                var Table = document.createElement('table');
+                Table.id = 'matrixTable';
+                
+                var tr = document.createElement('tr');
+                var th1 = document.createElement('th');
+                var th2 = document.createElement('th');
+                var th3 = document.createElement('th');
+                var th4 = document.createElement('th');
+                var th5 = document.createElement('th');
+                var text1 = document.createTextNode('საწყისი წერტილი');
+                var text2 = document.createTextNode('საბოლოო წერტილი');
+                var text3 = document.createTextNode('სიგრძე(მეტრი)');
+                var text4 = document.createTextNode('მილის ტიპი');
+                var text5 = document.createTextNode('მილის დიამეტრი');
+                
+                th1.appendChild(text1);
+                th2.appendChild(text2);
+                th3.appendChild(text3);
+                th4.appendChild(text4);
+                th5.appendChild(text5);
+                tr.appendChild(th1);
+                tr.appendChild(th2);
+                tr.appendChild(th3);
+                tr.appendChild(th4);
+                tr.appendChild(th5);
+                
+                Table.appendChild(tr);
+                
+                var sm = parseInt(document.getElementById('nodes').value);
+                
+                for (var i = 1; i <= sn + sm; i++)
+                {
+                    var input1 = document.createElement('input');
+                    var input2 = document.createElement('input');
+                    var input3 = document.createElement('input');
+                    var input4 = document.createElement('input');
+                    var input5 = document.createElement('input');
+                    input1.type = 'text';
+                    input2.type = 'text';
+                    input3.type = 'text';
+                    input4.type = 'text';
+                    input5.type = 'text';
+                    var td1 = document.createElement('td');
+                    var td2 = document.createElement('td');
+                    var td3 = document.createElement('td');
+                    var td4 = document.createElement('td');
+                    var td5 = document.createElement('td');
+                    
+                    var select1 = document.createElement('select');
+                    
+                    select1.onchange = function() {typeOnChange(this);} 
+                    var option1 = document.createElement('option');
+                    var option2 = document.createElement('option');
+                    var option3 = document.createElement('option');
+
+                    option1.value = '1';
+                    option1.text = 'პოლიეთილენი(SDR17)';
+
+                    option2.value = '2';
+                    option2.text = 'პოლიეთილენი(SDR11)';
+
+                    option3.value = '3';
+                    option3.text = 'მეტალი';
+                    select1.appendChild(option1);
+                    select1.appendChild(option2);
+                    select1.appendChild(option3);
+                    
+                    var select2 = document.createElement('select');
+                    fillDiematerOptions(select2, 1);
+
+                    td1.appendChild(fillOptions(sn, sm));
+                    td2.appendChild(fillOptions(sn, sm));
+                    td3.appendChild(input3);
+                    td4.appendChild(select1);
+                    td5.appendChild(select2);
+
+                    var tr = document.createElement('tr');
+                    tr.appendChild(td1);
+                    tr.appendChild(td2);
+                    tr.appendChild(td3);
+                    tr.appendChild(td4);
+                    tr.appendChild(td5);
+                    
+                    Table.appendChild(tr);
+                }
+                
+                TableArea.appendChild(Table);
+                
+            }
+            function typeOnChange(typeElement) {
+                fillDiematerOptions(typeElement.parentElement.parentElement.children[4].firstChild, typeElement.value);
+
+            }
+            function fillDiematerOptions(_select, type) {
+                
+                while (_select.firstChild) {
+                    _select.removeChild(_select.firstChild);
+                }
+                var defaultOption2_0 = document.createElement('option');
+                defaultOption2_0.value = 0;
+                defaultOption2_0.text = '0';
+                _select.appendChild(defaultOption2_0);
+                for (var i = 0; i < D[type].length; i++) {
+                    var cOption = document.createElement('option');
+                    cOption.value = D[type][i];
+                    cOption.text = D[type][i].toString();
+                    _select.appendChild(cOption);
+                }
+            }
+            function fillOptions(n,  m){
+                var select = document.createElement('select');
+                for (var i =0; i <= n + m; i++){
+                    var option = document.createElement('option');
+                    option.value = i;
+                    option.text = i.toString();
+                    select.appendChild(option);
+                }
+                
+                return select;
+            }
+            function initBeforeSave(){
+                P0 = parseFloat(document.getElementById('source').value);
+                n = parseInt(document.getElementById('subscribers').value);
+                m = parseInt(document.getElementById('nodes').value);
+                
+                e = m + n;
+                for (var i = 0; i <= n + m; i++){
+                    Pinit[i] = 0;
+                    Qinit[i] = 0;
+                    Iinit[i] = 0;
+                    Ainit[i] = 0;
+                    Binit[i] = 0;
+                    Linit[i] = 0;
+                    Tinit[i] = 0;
+                    
+                }
+                for (var i = 0; i < n + m; i++){
+                    var row = document.getElementById('subscribersTable').children[i + 1];
+                    Iinit[i] = parseInt(row.children[0].children[0].value);
+                    Qinit[i] = parseInt(row.children[1].children[0].value);
+                    if (i >= m)
+                        Pinit[i] = parseFloat(row.children[2].children[0].value);
+                }
+                
+                for (var i = 0; i < n + m; i++){
+                    var row = document.getElementById('matrixTable').children[i + 1];
+                    Ainit[i] = parseInt(row.children[0].children[0].value);
+                    Binit[i] = parseInt(row.children[1].children[0].value);
+                    Linit[i] = parseInt(row.children[2].children[0].value);
+                    Tinit[i] = parseInt(row.children[3].children[0].value);
+                    Dinit[i] = parseFloat(row.children[4].children[0].value);
+                }
+            }
+            function saveToFile(){
+                initBeforeSave();
+                var SA = [];
+                SA.push(P0);
+                SA.push(n);
+                SA.push(m);
+                SA.push(Iinit);
+                SA.push(Qinit);
+                SA.push(Pinit);
+                SA.push(Ainit);
+                SA.push(Binit);
+                SA.push(Linit);
+                SA.push(Tinit);
+                SA.push(Dinit);
+                var str = JSON.stringify(SA);
+
+                var a = document.createElement("a");
+                var file = new Blob([str], {type: "gpd"});
+                a.href = URL.createObjectURL(file);
+                a.download = "Gas Pipeline Design.gpd"; 
+                a.click();
+                
+            }
+            function fillTables(ob){
+                var TableArea = document.getElementById('SuscribersTableDiv');
+                
+                var fc = TableArea.firstChild;
+                while (fc){
+                    TableArea.removeChild(fc);
+                    fc = TableArea.firstChild;
+                }
+                var Table = document.createElement('table');
+                Table.id = 'subscribersTable';
+                var tr = document.createElement('tr');
+                var th1 = document.createElement('th');
+                var th2 = document.createElement('th');
+                var th3 = document.createElement('th');
+                var text1 = document.createTextNode('აბონენტის ნომერი');
+                var text2 = document.createTextNode('მოხმარება(მ3/სთ)');
+                var text3 = document.createTextNode('წნევა(კგ/სმ2)');
+                th1.appendChild(text1);
+                th2.appendChild(text2);
+                th3.appendChild(text3);
+                tr.appendChild(th1);
+                tr.appendChild(th2);
+                tr.appendChild(th3);
+                Table.appendChild(tr);
+               
+                var _P0 = ob[0];
+                var _n = ob[1];
+                var _m = ob[2];
+                if (_P0)
+                    document.getElementById('source').value = _P0;
+                if (_n)
+                    document.getElementById('subscribers').value = _n;
+                if (_m)
+                    document.getElementById('nodes').value = _m;
+                var sn = _n;
+                var sm = _m;
+                var raod = 0;
+                for (var i = 1; i <= sn + sm; i++){
+                    raod++;
+                    var td1 = document.createElement('td');
+                    var td2 = document.createElement('td');
+                    var td3 = document.createElement('td');
+                    var text1 = document.createTextNode(i.toString());
+                    var input = document.createElement('input');
+                    input.type = 'text';
+                    td1.appendChild(fillOptions(sn, sm));
+                    td1.children[0].value = ob[3][i-1];
+                    td2.appendChild(input);
+                    td2.children[0].value = ob[4][i-1];
+                    var input2 = document.createElement('input');
+                    input.type = 'text';
+                    input2.value = ob[5][i-1];;
+                    td3.appendChild(input2);
+                    var tr = document.createElement('tr');
+                    tr.appendChild(td1);
+                    tr.appendChild(td2);
+                    if (raod > sm)
+                        tr.appendChild(td3);
+                    
+                    Table.appendChild(tr);
+
+                }
+
+                TableArea.appendChild(Table);
+                
+                var TableArea = document.getElementById('matrix');
+                
+                var fc = TableArea.firstChild;
+                while (fc){
+                    TableArea.removeChild(fc);
+                    fc = TableArea.firstChild;
+                }
+                
+                var Table = document.createElement('table');
+                Table.id = 'matrixTable';
+                
+                var tr = document.createElement('tr');
+                var th1 = document.createElement('th');
+                var th2 = document.createElement('th');
+                var th3 = document.createElement('th');
+                var th4 = document.createElement('th');
+                var th5 = document.createElement('th');
+                var text1 = document.createTextNode('საწყისი წერტილი');
+                var text2 = document.createTextNode('საბოლოო წერტილი');
+                var text3 = document.createTextNode('სიგრძე(მეტრი)');
+                var text4 = document.createTextNode('მილის ტიპი');
+                var text5 = document.createTextNode('მილის დიამეტრი');
+                
+                th1.appendChild(text1);
+                th2.appendChild(text2);
+                th3.appendChild(text3);
+                th4.appendChild(text4);
+                th5.appendChild(text5);
+
+                tr.appendChild(th1);
+                tr.appendChild(th2);
+                tr.appendChild(th3);
+                tr.appendChild(th4);
+                tr.appendChild(th5);
+
+                Table.appendChild(tr);
+                
+                var sm = parseInt(document.getElementById('nodes').value);
+                
+                for (var i = 1; i <= sn + sm; i++)
+                {
+                    var input1 = document.createElement('input');
+                    var input2 = document.createElement('input');
+                    var input3 = document.createElement('input');
+                    var input4 = document.createElement('input');
+                    var input5 = document.createElement('input');
+                    
+                    input1.type = 'text';
+                    input2.type = 'text';
+                    input3.type = 'text';
+                    input4.type = 'text';
+                    input5.type = 'text';
+                    
+                    var td1 = document.createElement('td');
+                    var td2 = document.createElement('td');
+                    var td3 = document.createElement('td');
+                    var td4 = document.createElement('td');
+                    var td5 = document.createElement('td');
+                    
+                    var select1 = document.createElement('select');
+                    
+                    var option1 = document.createElement('option');
+                    var option2 = document.createElement('option');
+                    var option3 = document.createElement('option');
+
+                    var select2 = document.createElement('select');
+
+                    fillDiematerOptions(select2, ob[9][i - 1]);
+
+                    option1.value = '1';
+                    option1.text = 'პოლიეთილენი(SDR17)';
+
+                    option2.value = '2';
+                    option2.text = 'პოლიეთილენი(SDR11)';
+
+                    option3.value = '3';
+                    option3.text = 'მეტალი';
+                    select1.appendChild(option1);
+                    select1.appendChild(option2);
+                    select1.appendChild(option3);
+                    
+                    td1.appendChild(fillOptions(sn, sm));
+                    td1.children[0].value = ob[6][i-1];
+                    td2.appendChild(fillOptions(sn, sm));
+                    td2.children[0].value = ob[7][i-1];
+                    td3.appendChild(input3);
+                    td3.children[0].value = ob[8][i-1];
+                    td4.appendChild(select1);
+                    td4.children[0].value = ob[9][i-1];
+                    td5.appendChild(select2);
+                    if (ob.length > 10)
+                        td5.firstChild.value = ob[10][i - 1];
+                    
+                    var tr = document.createElement('tr');
+                    tr.appendChild(td1);
+                    tr.appendChild(td2);
+                    tr.appendChild(td3);
+                    tr.appendChild(td4);
+                    tr.appendChild(td5);
+                    
+                    Table.appendChild(tr);
+                }
+                
+                TableArea.appendChild(Table);
+                calculate();
+                
+            }
+            function loadFile(e){
+                var contents = e.target.result;
+                var newObject = JSON.parse(contents);
+                
+
+                fillTables(newObject);
+            }
+            function readDataFromFile(evt){
+                var of = document.getElementById("of");
+                var lf = evt.target.files[0];
+                if (lf){
+                    var reader = new FileReader();
+                    reader.addEventListener("load", loadFile, false); 
+                    reader.readAsText(lf);
+                }
+               
+            }
+            function loadFromFile(){
+                var of = document.getElementById("of");
+                of.addEventListener("change", readDataFromFile, false);
+                of.click();
+                
+            }
+        </script>
+        <div id="1">
+            <form> 
+                <label>საწყისი წნევა</label> <input type="text" name="source" id="source"><br>
+                <label>აბონენტების რაოდენობა</label> <input type="text" name="subscribers" id="subscribers"><br>
+                <label>კვანძების რაოდენობა</label> <input type="text" name="nodes" id="nodes"><br>
+            </form>
+            <button onclick="myFunction()">ცხრილის გენერაცია</button>
+            <button onclick="calculate()">კალკულაცია</button>
+            <button onclick="saveToFile()">შენახვა</button>
+            <button onclick="loadFromFile()">ჩატვირთვა</button>
+            <input type="file" id="of" title="ფაილის არჩევა" style="visibility: hidden">
+        </div>
+
+        <table>
+            <tbody><tr>
+                <td>
+                    <div id="SuscribersTableDiv" style="float : left">
+
+                    </div>
+                </td>
+                <td>
+                    <div id="matrix" style="float : right">
+
+                    </div>
+                </td>
+            </tr>
+            <tr>
+                <td>
+                    <div id="resultsSuscribersTableDiv" style="float : left">
+
+                    </div>
+                </td>
+                <td>
+                    <div id="resultmatrix" style="float : right">
+
+                    </div>
+                </td>
+            </tr>
+        </tbody></table>
+    <div style="text-align: right;position: fixed;z-index:9999999;bottom: 0;width: auto;right: 1%;cursor: pointer;line-height: 0;display:block !important;"><a title="Hosted on free web hosting 000webhost.com. Host your own website for FREE." target="_blank" href="https://www.000webhost.com/?utm_source=000webhostapp&amp;utm_campaign=000_logo&amp;utm_medium=website&amp;utm_content=footer_img"><img src="./Design Natural Gas Pipeline_files/footer-powered-by-000webhost-white2.webp" alt="www.000webhost.com"></a></div><script>function getCookie(e){for(var t=e+"=",n=decodeURIComponent(document.cookie).split(";"),o=0;o<n.length;o++){for(var i=n[o];" "==i.charAt(0);)i=i.substring(1);if(0==i.indexOf(t))return i.substring(t.length,i.length)}return""}getCookie("hostinger")&&(document.cookie="hostinger=;expires=Thu, 01 Jan 1970 00:00:01 GMT;",location.reload());var notification=document.getElementsByClassName("notice notice-success is-dismissible"),hostingerLogo=document.getElementsByClassName("hlogo"),mainContent=document.getElementsByClassName("notice_content")[0],newList=["Powerful and Easy-To-Use Control Panel.","1-Click Auto Installer and 24/7 Live Support.","Free Domain, Email and SSL Bundle.","5x faster WordPress performance","Weekly Backups and Fast Response Time."];if(notification.length>0&&null!=mainContent){var googleFont=document.createElement("link");googleFontHref=document.createAttribute("href"),googleFontRel=document.createAttribute("rel"),googleFontHref.value="https://fonts.googleapis.com/css?family=Open+Sans:300,400,600",googleFontRel.value="stylesheet",googleFont.setAttributeNode(googleFontHref),googleFont.setAttributeNode(googleFontRel);var css="@media only screen and (max-width: 768px) {.web-hosting-90-off-image-wrapper {position: absolute;} .notice_content {justify-content: center;} .web-hosting-90-off-image {opacity: 0.3;}} @media only screen and (min-width: 769px) {.notice_content {justify-content: space-between;} .web-hosting-90-off-image-wrapper {padding: 0 5%}} .content-wrapper {z-index: 5} .notice_content {display: flex; align-items: center;} * {-webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;} .upgrade_button_red_sale{border: 0; border-radius: 3px; background-color: #ff123a !important; padding: 15px 55px !important; margin-left: 30px; font-family: 'Open Sans', sans-serif; font-size: 16px; font-weight: 600; color: #ffffff;} .upgrade_button_red_sale:hover{color: #ffffff !important; background: #d10303 !important;}",style=document.createElement("style"),sheet=window.document.styleSheets[0];style.styleSheet?style.styleSheet.cssText=css:style.appendChild(document.createTextNode(css)),document.getElementsByTagName("head")[0].appendChild(style),document.getElementsByTagName("head")[0].appendChild(googleFont);var button=document.getElementsByClassName("upgrade_button_red")[0],link=button.parentElement;link.setAttribute("href","https://www.hostinger.com/hosting-starter-offer?utm_source=000webhost&utm_medium=panel&utm_campaign=000-wp"),link.innerHTML='<button class="upgrade_button_red_sale">TRANSFER NOW</button>',(notification=notification[0]).setAttribute("style","padding-bottom: 10px; padding-top: 5px; background-image: url(https://cdn.000webhost.com/000webhost/promotions/springsale/mountains-neon-background.jpg); background-color: #000000; background-size: cover; background-repeat: no-repeat; color: #ffffff; border-color: #ff123a; border-width: 8px;"),notification.className="notice notice-error is-dismissible",(hostingerLogo=hostingerLogo[0]).setAttribute("src","https://cdn.000webhost.com/000webhost/promotions/springsale/logo-hostinger-white.svg"),hostingerLogo.setAttribute("style","float: none !important; height: auto; max-width: 100%; margin: 40px 20px 10px 30px;");var h1Tag=notification.getElementsByTagName("H1")[0];h1Tag.remove();var paragraph=notification.getElementsByTagName("p")[0];paragraph.innerHTML="Fast & Secure Web Hosting. <br>Limited time offer: get an SSL certificate for FREE",paragraph.setAttribute("style",'max-width: 600px; margin-left: 30px; font-family: "Open Sans", sans-serif; font-size: 16px; font-weight: 600;');var list=notification.getElementsByTagName("UL")[0];list.setAttribute("style","max-width: 675px;");for(var listElements=list.getElementsByTagName("LI"),i=0;i<newList.length;i++)listElements[i].setAttribute("style","color:#ffffff; list-style-type: disc; margin-left: 30px; font-family: 'Open Sans', sans-serif; font-size: 14px; font-weight: 300; line-height: 1.5;"),listElements[i].innerHTML=newList[i];listElements[listElements.length-1].remove();var org_html=mainContent.innerHTML,new_html='<div class="content-wrapper">'+mainContent.innerHTML+'</div><div class="web-hosting-90-off-image-wrapper"><img class="web-hosting-90-off-image" src="https://cdn.000webhost.com/000webhost/promotions/springsale/web-hosting-90-off.png"></div>';mainContent.innerHTML=new_html;var saleImage=mainContent.getElementsByClassName("web-hosting-90-off-image")[0]}</script>
+
+</body></html>
